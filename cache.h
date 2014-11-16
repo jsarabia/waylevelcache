@@ -147,6 +147,20 @@ struct cache_set_t
 /* cache definition */
 struct cache_t
 {
+
+  //FP -JS
+  /*The following lines are only for the L2 cache*/
+  int isl2;
+  unsigned int FSR;
+  int fullFlag;
+  unsigned int * poolTags; // tag s1w1, tag s1w2, ... tag s1wn, tag s2w1 ... 
+  unsigned int * memPool;  // data s1w1, data s1w2, ... data s1wn, data s2w1 ... 
+  unsigned int * fullBit;
+  unsigned int * usageCtr;
+  unsigned int * fwdPtr;
+  /*End changes for L2*/
+
+
   /* parameters */
   char *name;			/* cache name */
   int nsets;			/* number of sets */
