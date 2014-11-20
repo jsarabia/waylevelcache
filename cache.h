@@ -142,6 +142,11 @@ struct cache_set_t
   struct cache_blk_t *blks;	/* cache blocks, allocated sequentially, so
 				   this pointer can also be used for random
 				   access to cache blocks */
+
+  /*FP-BC This additional hardware must be added to each set in the L2*/
+  unsigned int * fullBit; //track whether or not the set is full
+  unsigned int * usageCtr; //track the number of ways in the set that are full
+  unsigned int * fwdPtr; //point to memory pool space for this set
 };
 
 /* cache definition */
@@ -150,14 +155,9 @@ struct cache_t
 
   //FP -JS
   /*The following lines are only for the L2 cache*/
-  int isl2;
+  int isL2;
   unsigned int FSR;
   int fullFlag;
-  unsigned int * poolTags; // tag s1w1, tag s1w2, ... tag s1wn, tag s2w1 ...
-  unsigned int * memPool;  // data s1w1, data s1w2, ... data s1wn, data s2w1 ...
-  unsigned int * fullBit;
-  unsigned int * usageCtr;
-  unsigned int * fwdPtr;
   /*End changes for L2*/
 
 

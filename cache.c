@@ -258,7 +258,7 @@ update_way_list(struct cache_set_t *set,	/* set contained way chain */
 
 /* create and initialize a general cache structure */
 struct cache_t *			/* pointer to cache created */
-  (char *name,		/* name of the cache */
+cache_create(char *name,		/* name of the cache */
 	     int nsets,			/* total number of sets in cache */
 	     int bsize,			/* block (line) size of cache */
 	     int balloc,		/* allocate data space for blocks? */
@@ -300,27 +300,21 @@ struct cache_t *			/* pointer to cache created */
   /* allocate the cache structure */
   /*FP-BC space must be allocated for the structure itself, as well as the space for the main cache data
         and the shared data pool*/
-  if(isL2)
-  {
-      cp = (struct cache_t *)
-        calloc(1, sizeof(struct cache_t) + (nsets-1)*sizeof(struct cache_set_t) + (nsets-1)*sizeof(struct cache_set_t));
-  }
-  else
-  {
-      cp = (struct cache_t *)
-        calloc(1, sizeof(struct cache_t) + (nsets-1)*sizeof(struct cache_set_t));
-  }
+  cp = (struct cache_t *)
+    calloc(1, sizeof(struct cache_t) + (nsets-1)*sizeof(struct cache_set_t));
 
   if (!cp)
     fatal("out of virtual memory");
 
   /* initialize user parameters */
   cp->name = mystrdup(name);
-  cp->nsets = nsets;
+  cp->nsets = nsets * 2; /*FP-BC number of sets in new cache
+                            structure is double the input*/
   cp->bsize = bsize;
   cp->balloc = balloc;
   cp->usize = usize;
-  cp->assoc = assoc;
+  cp->assoc = assoc / 2; /*FP-BC associativity in new cache
+                            structure is half the input*/
   cp->policy = policy;
   cp->hit_latency = hit_latency;
   cp->isl2 = isL2;
@@ -328,23 +322,7 @@ struct cache_t *			/* pointer to cache created */
   /* miss/replacement functions */
   cp->blk_access_fn = blk_access_fn;
 
-  /* compute derived parameters */
-  cp->hsize = CACHE_HIGHLY_ASSOC(cp) ? (assoc >> 2) : 0;
-  cp->blk_mask = bsize-1;
-  cp->set_shift = log_base2(bsize);
-  cp->set_mask = nsets-1;
-  cp->tag_shift = cp->set_shift + log_base2(nsets);
-  cp->tag_mask = (1 << (32 - cp->tag_shift))-1;
-  cp->tagset_mask = ~cp->blk_mask;
-  cp->bus_free = 0;
 
-  /* print derived parameters during debug */
-  debug("%s: cp->hsize     = %d", cp->name, cp->hsize);
-  debug("%s: cp->blk_mask  = 0x%08x", cp->name, cp->blk_mask);
-  debug("%s: cp->set_shift = %d", cp->name, cp->set_shift);
-  debug("%s: cp->set_mask  = 0x%08x", cp->name, cp->set_mask);
-  debug("%s: cp->tag_shift = %d", cp->name, cp->tag_shift);
-  debug("%s: cp->tag_mask  = 0x%08x", cp->name, cp->tag_mask);
 
   /* initialize cache stats */
   cp->hits = 0;
@@ -365,43 +343,9 @@ struct cache_t *			/* pointer to cache created */
   if (!cp->data)
     fatal("out of virtual memory");
 
-  /*FP-BC allocate data blocks for memory pool, pool tags, full bits, usage counter, and forward pointers.
-    Also configure full flag and FSR to initial values */
+  /*FP-BC configure full flag and FSR to initial values */
   if(isL2)
   {
-      //Memory pool allocation
-      cp->memPool = (byte_t *)calloc(nsets * assoc,
-			      sizeof(struct cache_blk_t) +
-			      (cp->balloc ? (bsize*sizeof(byte_t)) : 0));
-
-      if (!cp->memPool)
-        fatal("out of virtual memory");
-
-      //Pool tags array allocation
-      cp->poolTags = (unsigned int *)calloc(nsets * assoc,
-                        sizeof(unsigned int));
-
-      if (!cp->poolTags)
-        fatal("out of virtual memory");
-
-      //Full bit array allocation
-      cp->fullBit = (unsigned int *)calloc(nsets * 2, sizeof(unsigned int));
-
-      if (!cp->fullBit)
-        fatal("out of virtual memory");
-
-      //Usage counter array allocation
-      cp->usageCtr = (unsigned int *)calloc(nsets * 2, sizeof(unsigned int));
-
-      if (!cp->usageCtr)
-        fatal("out of virtual memory");
-
-      //Forward pointer array allocation
-      cp->fwdPtr = (unsigned int *)calloc(nsets * 2, sizeof(unsigned int));
-
-      if (!cp->fwdPtr)
-        fatal("out of virtual memory");
-
       //Set FSR and full flag to initial values
       cp->FSR = nsets + 1;
 
@@ -457,6 +401,29 @@ struct cache_t *			/* pointer to cache created */
 	    cp->sets[i].way_tail = blk;
 	}
     }
+
+  /*FP-BC number of sets in new cache structure must be
+    stored as if the cache pool doesn't exist*/
+  cp->nsets = nsets;
+
+  /* compute derived parameters */
+  cp->hsize = CACHE_HIGHLY_ASSOC(cp) ? (assoc >> 2) : 0;
+  cp->blk_mask = bsize-1;
+  cp->set_shift = log_base2(bsize);
+  cp->set_mask = nsets-1;
+  cp->tag_shift = cp->set_shift + log_base2(nsets);
+  cp->tag_mask = (1 << (32 - cp->tag_shift))-1;
+  cp->tagset_mask = ~cp->blk_mask;
+  cp->bus_free = 0;
+
+  /* print derived parameters during debug */
+  debug("%s: cp->hsize     = %d", cp->name, cp->hsize);
+  debug("%s: cp->blk_mask  = 0x%08x", cp->name, cp->blk_mask);
+  debug("%s: cp->set_shift = %d", cp->name, cp->set_shift);
+  debug("%s: cp->set_mask  = 0x%08x", cp->name, cp->set_mask);
+  debug("%s: cp->tag_shift = %d", cp->name, cp->tag_shift);
+  debug("%s: cp->tag_mask  = 0x%08x", cp->name, cp->tag_mask);
+
   return cp;
 }
 
@@ -596,30 +563,67 @@ cache_access(struct cache_t *cp,	/* cache to access */
       goto cache_fast_hit;
     }
 
-  if (cp->hsize)
-    {
-      /* higly-associativity cache, access through the per-set hash tables */
-      int hindex = CACHE_HASH(cp, tag);
+  /*FP-BC Modified cache hit checker for new cache structure*/
+  if(cp->isL2)
+  {
+       /*FP-BC continue through each linked set with data*/
+       while(cp->sets[set].usageCtr)
+       {
+          if (cp->hsize)
+          {
+              /* higly-associativity cache, access through the per-set hash tables */
+              int hindex = CACHE_HASH(cp, tag);
 
-      for (blk=cp->sets[set].hash[hindex];
-	   blk;
-	   blk=blk->hash_next)
-	{
-	  if (blk->tag == tag && (blk->status & CACHE_BLK_VALID))
-	    goto cache_hit;
-	}
-    }
+              for (blk=cp->sets[set].hash[hindex]; blk; blk=blk->hash_next)
+              {
+                  if (blk->tag == tag && (blk->status & CACHE_BLK_VALID))
+                    goto cache_hit;
+              }
+          }
+
+          else
+          {
+              /* low-associativity cache, linear search the way list */
+              for (blk=cp->sets[set].way_head; blk; blk=blk->way_next)
+              {
+                  if (blk->tag == tag && (blk->status & CACHE_BLK_VALID))
+                    goto cache_hit;
+              }
+          }
+
+          /*FP-BC If the current set has a pointer to another set,
+            follow it and check again for a hit*/
+          if(cp->sets[set].fwdPtr)
+            set = cp->sets[set].fwdPtr;
+          else
+            break;
+       }
+  }
+
+  /*FP-BC Original cache hit checker*/
   else
-    {
-      /* low-associativity cache, linear search the way list */
-      for (blk=cp->sets[set].way_head;
-	   blk;
-	   blk=blk->way_next)
-	{
-	  if (blk->tag == tag && (blk->status & CACHE_BLK_VALID))
-	    goto cache_hit;
-	}
-    }
+  {
+      if (cp->hsize)
+      {
+          /* higly-associativity cache, access through the per-set hash tables */
+          int hindex = CACHE_HASH(cp, tag);
+
+          for (blk=cp->sets[set].hash[hindex]; blk; blk=blk->hash_next)
+          {
+              if (blk->tag == tag && (blk->status & CACHE_BLK_VALID))
+                goto cache_hit;
+          }
+      }
+      else
+      {
+          /* low-associativity cache, linear search the way list */
+          for (blk=cp->sets[set].way_head; blk; blk=blk->way_next)
+          {
+              if (blk->tag == tag && (blk->status & CACHE_BLK_VALID))
+                goto cache_hit;
+          }
+      }
+  }
 
   /* cache block not found */
 
