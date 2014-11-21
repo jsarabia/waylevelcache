@@ -358,6 +358,9 @@ cache_create(char *name,		/* name of the cache */
     {
       cp->sets[i].way_head = NULL;
       cp->sets[i].way_tail = NULL;
+      cp->sets[i].fullBit = 0;
+      cp->sets[i].usageCtr = 0;
+      cp->sets[i].fwdPtr  = 0;
       /* get a hash table, if needed */
       if (cp->hsize)
 	{
@@ -563,38 +566,46 @@ cache_access(struct cache_t *cp,	/* cache to access */
       goto cache_fast_hit;
     }
 
+
+
+  /*FP-JS Loc will store the last line traversed through the list
+  I want to keep set so I know where the head of the list is for replacement
+  */
+  unsigned int loc = set; 
   /*FP-BC Modified cache hit checker for new cache structure*/
   if(cp->isL2)
   {
        /*FP-BC continue through each linked set with data*/
-       while(cp->sets[set].usageCtr)
+       while(cp->sets[loc].usageCtr)
        {
           if (cp->hsize)
           {
               /* higly-associativity cache, access through the per-set hash tables */
               int hindex = CACHE_HASH(cp, tag);
 
-              for (blk=cp->sets[set].hash[hindex]; blk; blk=blk->hash_next)
+              for (blk=cp->sets[loc].hash[hindex]; blk; blk=blk->hash_next)
               {
-                  if (blk->tag == tag && (blk->status & CACHE_BLK_VALID))
+                  if (blk->tag == tag && (blk->status & CACHE_BLK_VALID)){
                     goto cache_hit;
+                  }
               }
           }
 
           else
           {
               /* low-associativity cache, linear search the way list */
-              for (blk=cp->sets[set].way_head; blk; blk=blk->way_next)
+              for (blk=cp->sets[loc].way_head; blk; blk=blk->way_next)
               {
-                  if (blk->tag == tag && (blk->status & CACHE_BLK_VALID))
+                  if (blk->tag == tag && (blk->status & CACHE_BLK_VALID)){
                     goto cache_hit;
+                  }
               }
           }
 
           /*FP-BC If the current set has a pointer to another set,
             follow it and check again for a hit*/
-          if(cp->sets[set].fwdPtr)
-            set = cp->sets[set].fwdPtr;
+          if(cp->sets[loc].fwdPtr)
+            loc = cp->sets[loc].fwdPtr;
           else
             break;
        }
@@ -632,7 +643,47 @@ cache_access(struct cache_t *cp,	/* cache to access */
 
   /* select the appropriate block to replace, and re-link this entry to
      the appropriate place in the way list */
-  switch (cp->policy) {
+
+  enum cache_policy policy = cp->policy;
+  if(cp->sets[loc].fullBit == 0){
+    policy = FIFO; //use FIFO to fill the set
+    cp->sets[loc].usageCtr++;
+    if(cp->sets[loc].usageCtr == cp->assoc){
+      cp->sets[loc].fullBit = 1; // set full if adding to the set reached its assoc
+    }
+    set = loc;
+  }
+  else if(cp->sets[loc].fullFlag == 0){
+    int numSets = cp->sets[set]->usageCtr % cp->assoc;
+    if(numSets < 5){ //only add a line if the linked list is less than 5 length
+      policy = FIFO;
+      cp->sets[loc]->fwdPtr = FSR;
+      set = FSR;
+      FSR++;
+      if(FSR >= cp->nsets){
+        cp->fullFlag = 1;
+      }
+    }
+    else {
+      int times = rand() % numSets;
+      int i = 0;
+      for(i = 0; i < times; i++){
+        if(cp->sets[set]->fwdPtr != 0)
+          set = cp->cp->sets[set]->fwdPtr;
+      }
+    }
+  }
+  else{ //else everything is full so randomly select a set
+    int numSets = cp->sets[set]->usageCtr % cp->assoc;
+    int times = rand() % numSets;
+    int i = 0;
+    for(i = 0; i < times; i++){
+      if(cp->sets[set]->fwdPtr != 0)
+        set = cp->cp->sets[set]->fwdPtr;
+    }
+  }
+
+  switch (policy) {
   case LRU:
   case FIFO:
     repl = cp->sets[set].way_tail;

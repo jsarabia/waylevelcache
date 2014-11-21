@@ -144,9 +144,9 @@ struct cache_set_t
 				   access to cache blocks */
 
   /*FP-BC This additional hardware must be added to each set in the L2*/
-  unsigned int * fullBit; //track whether or not the set is full
-  unsigned int * usageCtr; //track the number of ways in the set that are full
-  unsigned int * fwdPtr; //point to memory pool space for this set
+  unsigned int fullBit; //track whether or not the set is full
+  unsigned int usageCtr; //track the number of ways in the set that are full
+  unsigned int fwdPtr; //point to memory pool space for this set
 };
 
 /* cache definition */
