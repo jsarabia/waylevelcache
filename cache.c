@@ -317,7 +317,7 @@ cache_create(char *name,		/* name of the cache */
                             structure is half the input*/
   cp->policy = policy;
   cp->hit_latency = hit_latency;
-  cp->isl2 = isL2;
+  cp->isL2 = isL2;
 
   /* miss/replacement functions */
   cp->blk_access_fn = blk_access_fn;
@@ -653,14 +653,14 @@ cache_access(struct cache_t *cp,	/* cache to access */
     }
     set = loc;
   }
-  else if(cp->sets[loc].fullFlag == 0){
-    int numSets = cp->sets[set]->usageCtr % cp->assoc;
+  else if(cp->fullFlag == 0){
+    int numSets = cp->sets[set].usageCtr % cp->assoc;
     if(numSets < 5){ //only add a line if the linked list is less than 5 length
       policy = FIFO;
-      cp->sets[loc]->fwdPtr = FSR;
-      set = FSR;
-      FSR++;
-      if(FSR >= cp->nsets){
+      cp->sets[loc].fwdPtr = cp->FSR;
+      set = cp->FSR;
+      cp->FSR++;
+      if(cp->FSR >= cp->nsets){
         cp->fullFlag = 1;
       }
     }
@@ -668,18 +668,18 @@ cache_access(struct cache_t *cp,	/* cache to access */
       int times = rand() % numSets;
       int i = 0;
       for(i = 0; i < times; i++){
-        if(cp->sets[set]->fwdPtr != 0)
-          set = cp->cp->sets[set]->fwdPtr;
+        if(cp->sets[set].fwdPtr != 0)
+          set = cp->sets[set].fwdPtr;
       }
     }
   }
   else{ //else everything is full so randomly select a set
-    int numSets = cp->sets[set]->usageCtr % cp->assoc;
+    int numSets = cp->sets[set].usageCtr % cp->assoc;
     int times = rand() % numSets;
     int i = 0;
     for(i = 0; i < times; i++){
-      if(cp->sets[set]->fwdPtr != 0)
-        set = cp->cp->sets[set]->fwdPtr;
+      if(cp->sets[set].fwdPtr != 0)
+        set = cp->sets[set].fwdPtr;
     }
   }
 
