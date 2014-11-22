@@ -419,6 +419,7 @@ cache_create(char *name,		/* name of the cache */
     stored as if the cache pool doesn't exist*/
   if(isL2){  
     cp->nsets = nsets/2;
+    nsets = nsets/2;
   } 
   else cp->nsets = nsets;
   /* compute derived parameters */
@@ -554,6 +555,14 @@ cache_access(struct cache_t *cp,	/* cache to access */
   struct cache_blk_t *blk, *repl;
   int lat = 0;
 
+  if(cp->isL2){
+    if(set > 512){
+      fprintf(stderr, "Houston we have a problem, set = %d\n", set);
+      scanf("%d", &lat);
+    }
+  }
+
+  int pointerLat = 0;
 
   /* default replacement address */
   if (repl_addr)
@@ -591,6 +600,9 @@ cache_access(struct cache_t *cp,	/* cache to access */
        /*FP-BC continue through each linked set with data*/
        while(cp->sets[loc].usageCtr)
        {
+
+      //if(cp->isL2)
+      //fprintf(stderr, "ptr = %d, loc = %d", cp->sets[loc].fwdPtr, loc);
           if (cp->hsize)
           {
               /* higly-associativity cache, access through the per-set hash tables */
@@ -619,8 +631,10 @@ cache_access(struct cache_t *cp,	/* cache to access */
 
           /*FP-BC If the current set has a pointer to another set,
             follow it and check again for a hit*/
-          if(cp->sets[loc].fwdPtr)
+          if(cp->sets[loc].fwdPtr){
             loc = cp->sets[loc].fwdPtr;
+            pointerLat+=1;
+          }
           else
             break;
        }
@@ -673,39 +687,49 @@ cache_access(struct cache_t *cp,	/* cache to access */
       set = loc;
     }
     else if(cp->fullFlag == 0){
-      int numSets = cp->sets[set].usageCtr;
+      int numSets = cp->sets[set].usageCtr/cp->assoc;
       if(numSets < 5){ //only add a line if the linked list is less than 5 length
-        fprintf(stderr, "adding a pointer. FSR = %d, height = %d, links = %d\n", cp->FSR, cp->nsets, numSets);
+        //fprintf(stderr, "adding a pointer. FSR = %d, loc = %d\n", cp->FSR, cp->nsets, numSets, loc);
         policy = FIFO;
-        cp->sets[set].usageCtr++;
+        cp->sets[loc].usageCtr++;
+        if(loc != set)
+          cp->sets[set].usageCtr++;
         cp->sets[loc].fwdPtr = cp->FSR;
+        if(loc == cp->FSR){
+          fprintf(stderr, "FSR = %d loc = %d\n", cp->FSR,  loc);
+         // scanf("%s", &loc);
+        }
         set = cp->FSR;
-        cp->FSR++;
+        cp->FSR = 1 + (cp->FSR);
         if(cp->FSR >= cp->nsets*2){
           cp->fullFlag = 1;
         }
       }
       else {
-        fprintf(stderr, "more than 5 pointers\n");
+        //fprintf(stderr, "more than 5 pointers\n");
         int times = rand() % numSets;
         int i = 0;
         for(i = 0; i < times; i++){
-          if(cp->sets[set].fwdPtr != 0)
+          if(cp->sets[set].fwdPtr != 0){
             set = cp->sets[set].fwdPtr;
+                        pointerLat+=1;
+          }
         }
       }
     }
     else{ //else everything is full so randomly select a set
-      fprintf(stderr, "evicting a set\n");
-      int numSets = cp->sets[set].usageCtr % cp->assoc;
-      fprintf(stderr, "numSets is %d\n", numSets);
+      //fprintf(stderr, "evicting a set\n");
+      int numSets = cp->sets[set].usageCtr/cp->assoc;
+      //fprintf(stderr, "numSets is %d\n", numSets);
       int times = myrand();
-      times = times % 4;
-      fprintf(stderr, "times is %d\n", times);
+      times = times % numSets;
+      //fprintf(stderr, "times is %d\n", times);
       int i = 0;
       for(i = 0; i < times; i++){
-        if(cp->sets[set].fwdPtr != 0)
+        if(cp->sets[set].fwdPtr != 0){
           set = cp->sets[set].fwdPtr;
+                      pointerLat+=1;
+        }
       }
     }
   }
@@ -717,11 +741,11 @@ cache_access(struct cache_t *cp,	/* cache to access */
     break;
   case Random:
     {
-      fprintf(stderr, "here\n" );
+      //fprintf(stderr, "here\n" );
       int bindex = myrand();
       bindex = bindex & (cp->assoc - 1);
       repl = CACHE_BINDEX(cp, cp->sets[set].blks, bindex);
-      fprintf(stderr, "exiting\n" );
+      //fprintf(stderr, "exiting\n" );
     }
     break;
   default:
@@ -795,7 +819,7 @@ cache_access(struct cache_t *cp,	/* cache to access */
     link_htab_ent(cp, &cp->sets[set], repl);
 
   /* return latency of the operation */
-  return lat;
+  return lat+pointerLat;
 
 
  cache_hit: /* slow hit handler */
@@ -831,10 +855,9 @@ cache_access(struct cache_t *cp,	/* cache to access */
     *udata = blk->user_data;
     
   }
-  if(cp->isL2 && cmd == 1)
-      fprintf(stderr, "Hit!, lat = %d", (int) MAX(cp->hit_latency, (blk->ready - now)));
+
   /* return first cycle data is available to access */
-  return (int) MAX(cp->hit_latency, (blk->ready - now));
+  return (int) MAX(cp->hit_latency+pointerLat, pointerLat+(blk->ready - now));
 
  cache_fast_hit: /* fast hit handler */
   /* **FAST HIT** */
@@ -863,7 +886,7 @@ cache_access(struct cache_t *cp,	/* cache to access */
   cp->last_blk = blk;
 
   /* return first cycle data is available to access */
-  return (int) MAX(cp->hit_latency, (blk->ready - now));
+  return (int) MAX(pointerLat+cp->hit_latency, pointerLat+(blk->ready - now));
 }
 
 /* return non-zero if block containing address ADDR is contained in cache
