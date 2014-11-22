@@ -78,7 +78,7 @@
 ##	Windows NT version 4.0, Cygnus CygWin/32 beta 19
 ##
 CC = gcc
-OFLAGS = -O0 -g -Wall
+OFLAGS = -Ofast -march=native -flto -fwhole-program -g -Wall
 MFLAGS = `./sysprobe -flags`
 MLIBS  = `./sysprobe -libs` -lm
 ENDIAN = `./sysprobe -s`
@@ -249,7 +249,7 @@ X=/
 # -DSLOW_SHIFTS	- emulate all shift operations, only used for testing as
 #		  sysprobe will auto-detect if host can use fast shifts
 #
-FFLAGS = -DDEBUG
+#FFLAGS = -DDEBUG
 
 #
 # Point the Makefile to your Simplescalar-based bunutils, these definitions
