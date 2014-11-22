@@ -297,6 +297,10 @@ cache_create(char *name,		/* name of the cache */
   if (!blk_access_fn)
     fatal("must specify miss/replacement functions");
 
+  if(isL2){
+    nsets *= 2;
+  }
+
   /* allocate the cache structure */
   /*FP-BC space must be allocated for the structure itself, as well as the space for the main cache data
         and the shared data pool*/
@@ -308,21 +312,25 @@ cache_create(char *name,		/* name of the cache */
 
   /* initialize user parameters */
   cp->name = mystrdup(name);
-  cp->nsets = nsets * 2; /*FP-BC number of sets in new cache
+  cp->nsets = nsets; /*FP-BC number of sets in new cache
                             structure is double the input*/
   cp->bsize = bsize;
   cp->balloc = balloc;
   cp->usize = usize;
-  cp->assoc = assoc / 2; /*FP-BC associativity in new cache
+
+  if(isL2){
+    cp->assoc = assoc / 2; /*FP-BC associativity in new cache
                             structure is half the input*/
+  }
+  else
+   cp->assoc = assoc;
+
   cp->policy = policy;
   cp->hit_latency = hit_latency;
   cp->isL2 = isL2;
 
   /* miss/replacement functions */
   cp->blk_access_fn = blk_access_fn;
-
-
 
   /* initialize cache stats */
   cp->hits = 0;
@@ -336,7 +344,7 @@ cache_create(char *name,		/* name of the cache */
   cp->last_blk = NULL;
 
   /* allocate data blocks */
-  cp->data = (byte_t *)calloc(nsets * assoc,
+  cp->data = (byte_t *)calloc(nsets * assoc, //maybe needs 2x?
 			      sizeof(struct cache_blk_t) +
 			      (cp->balloc ? (bsize*sizeof(byte_t)) : 0));
 
@@ -347,16 +355,18 @@ cache_create(char *name,		/* name of the cache */
   if(isL2)
   {
       //Set FSR and full flag to initial values
-      cp->FSR = nsets + 1;
+      cp->FSR = (nsets/2) + 1;
 
       cp->fullFlag = FALSE;
   }
 
 
   /* slice up the data blocks */
-  for (bindex=0,i=0; i<nsets; i++)
+  for (bindex=0,i=0; i<nsets; i++) //maybe needs 2x?
     {
+      fprintf(stderr, "here\n" );
       cp->sets[i].way_head = NULL;
+      fprintf(stderr, "and here\n" );
       cp->sets[i].way_tail = NULL;
       cp->sets[i].fullBit = 0;
       cp->sets[i].usageCtr = 0;
@@ -407,8 +417,10 @@ cache_create(char *name,		/* name of the cache */
 
   /*FP-BC number of sets in new cache structure must be
     stored as if the cache pool doesn't exist*/
-  cp->nsets = nsets;
-
+  if(isL2){  
+    cp->nsets = nsets/2;
+  } 
+  else cp->nsets = nsets;
   /* compute derived parameters */
   cp->hsize = CACHE_HIGHLY_ASSOC(cp) ? (assoc >> 2) : 0;
   cp->blk_mask = bsize-1;
@@ -542,6 +554,7 @@ cache_access(struct cache_t *cp,	/* cache to access */
   struct cache_blk_t *blk, *repl;
   int lat = 0;
 
+
   /* default replacement address */
   if (repl_addr)
     *repl_addr = 0;
@@ -586,6 +599,7 @@ cache_access(struct cache_t *cp,	/* cache to access */
               for (blk=cp->sets[loc].hash[hindex]; blk; blk=blk->hash_next)
               {
                   if (blk->tag == tag && (blk->status & CACHE_BLK_VALID)){
+                    //fprintf(stderr, "Hit!");
                     goto cache_hit;
                   }
               }
@@ -597,6 +611,7 @@ cache_access(struct cache_t *cp,	/* cache to access */
               for (blk=cp->sets[loc].way_head; blk; blk=blk->way_next)
               {
                   if (blk->tag == tag && (blk->status & CACHE_BLK_VALID)){
+                       //                 fprintf(stderr, "Hit!");
                     goto cache_hit;
                   }
               }
@@ -641,31 +656,52 @@ cache_access(struct cache_t *cp,	/* cache to access */
   /* **MISS** */
   cp->misses++;
 
+    enum cache_policy policy = cp->policy;
+
   /* select the appropriate block to replace, and re-link this entry to
      the appropriate place in the way list */
-
-  enum cache_policy policy = cp->policy;
-  if(cp->sets[loc].fullBit == 0){
-    policy = FIFO; //use FIFO to fill the set
-    cp->sets[loc].usageCtr++;
-    if(cp->sets[loc].usageCtr == cp->assoc){
-      cp->sets[loc].fullBit = 1; // set full if adding to the set reached its assoc
+  if(cp->isL2){
+    if(cp->sets[loc].fullBit == 0){
+      //fprintf(stderr, "FIFO\n" );
+      policy = FIFO; //use FIFO to fill the set
+      cp->sets[loc].usageCtr++;
+      if(loc != set)
+        cp->sets[set].usageCtr++;
+      if(cp->sets[loc].usageCtr == cp->assoc){
+        cp->sets[loc].fullBit = 1; // set full if adding to the set reached its assoc
+      }
+      set = loc;
     }
-    set = loc;
-  }
-  else if(cp->fullFlag == 0){
-    int numSets = cp->sets[set].usageCtr % cp->assoc;
-    if(numSets < 5){ //only add a line if the linked list is less than 5 length
-      policy = FIFO;
-      cp->sets[loc].fwdPtr = cp->FSR;
-      set = cp->FSR;
-      cp->FSR++;
-      if(cp->FSR >= cp->nsets){
-        cp->fullFlag = 1;
+    else if(cp->fullFlag == 0){
+      int numSets = cp->sets[set].usageCtr;
+      if(numSets < 5){ //only add a line if the linked list is less than 5 length
+        fprintf(stderr, "adding a pointer. FSR = %d, height = %d, links = %d\n", cp->FSR, cp->nsets, numSets);
+        policy = FIFO;
+        cp->sets[set].usageCtr++;
+        cp->sets[loc].fwdPtr = cp->FSR;
+        set = cp->FSR;
+        cp->FSR++;
+        if(cp->FSR >= cp->nsets*2){
+          cp->fullFlag = 1;
+        }
+      }
+      else {
+        fprintf(stderr, "more than 5 pointers\n");
+        int times = rand() % numSets;
+        int i = 0;
+        for(i = 0; i < times; i++){
+          if(cp->sets[set].fwdPtr != 0)
+            set = cp->sets[set].fwdPtr;
+        }
       }
     }
-    else {
-      int times = rand() % numSets;
+    else{ //else everything is full so randomly select a set
+      fprintf(stderr, "evicting a set\n");
+      int numSets = cp->sets[set].usageCtr % cp->assoc;
+      fprintf(stderr, "numSets is %d\n", numSets);
+      int times = myrand();
+      times = times % 4;
+      fprintf(stderr, "times is %d\n", times);
       int i = 0;
       for(i = 0; i < times; i++){
         if(cp->sets[set].fwdPtr != 0)
@@ -673,16 +709,6 @@ cache_access(struct cache_t *cp,	/* cache to access */
       }
     }
   }
-  else{ //else everything is full so randomly select a set
-    int numSets = cp->sets[set].usageCtr % cp->assoc;
-    int times = rand() % numSets;
-    int i = 0;
-    for(i = 0; i < times; i++){
-      if(cp->sets[set].fwdPtr != 0)
-        set = cp->sets[set].fwdPtr;
-    }
-  }
-
   switch (policy) {
   case LRU:
   case FIFO:
@@ -691,8 +717,11 @@ cache_access(struct cache_t *cp,	/* cache to access */
     break;
   case Random:
     {
-      int bindex = myrand() & (cp->assoc - 1);
+      fprintf(stderr, "here\n" );
+      int bindex = myrand();
+      bindex = bindex & (cp->assoc - 1);
       repl = CACHE_BINDEX(cp, cp->sets[set].blks, bindex);
+      fprintf(stderr, "exiting\n" );
     }
     break;
   default:
@@ -748,6 +777,8 @@ cache_access(struct cache_t *cp,	/* cache to access */
       CACHE_BCOPY(cmd, repl, bofs, p, nbytes);
     }
 
+
+
   /* update dirty status */
   if (cmd == Write)
     repl->status |= CACHE_BLK_DIRTY;
@@ -796,14 +827,16 @@ cache_access(struct cache_t *cp,	/* cache to access */
   cp->last_blk = blk;
 
   /* get user block data, if requested and it exists */
-  if (udata)
+  if (udata){
     *udata = blk->user_data;
-
+    
+  }
+  if(cp->isL2 && cmd == 1)
+      fprintf(stderr, "Hit!, lat = %d", (int) MAX(cp->hit_latency, (blk->ready - now)));
   /* return first cycle data is available to access */
   return (int) MAX(cp->hit_latency, (blk->ready - now));
 
  cache_fast_hit: /* fast hit handler */
-
   /* **FAST HIT** */
   cp->hits++;
 
@@ -883,6 +916,8 @@ cache_flush(struct cache_t *cp,		/* cache instance to flush */
   int i, lat = cp->hit_latency; /* min latency to probe cache */
   struct cache_blk_t *blk;
 
+    fprintf( stderr, "cache flush\n" );
+
   /* blow away the last block to hit */
   cp->last_tagset = 0;
   cp->last_blk = NULL;
@@ -920,6 +955,7 @@ cache_flush_addr(struct cache_t *cp,	/* cache instance to flush */
 		 md_addr_t addr,	/* address of block to flush */
 		 tick_t now)		/* time of cache flush */
 {
+  fprintf( stderr, "flush address\n" );
   md_addr_t tag = CACHE_TAG(cp, addr);
   md_addr_t set = CACHE_SET(cp, addr);
   struct cache_blk_t *blk;
