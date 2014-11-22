@@ -2,20 +2,20 @@
 
 /* SimpleScalar(TM) Tool Suite
  * Copyright (C) 1994-2003 by Todd M. Austin, Ph.D. and SimpleScalar, LLC.
- * All Rights Reserved. 
- * 
+ * All Rights Reserved.
+ *
  * THIS IS A LEGAL DOCUMENT, BY USING SIMPLESCALAR,
  * YOU ARE AGREEING TO THESE TERMS AND CONDITIONS.
- * 
+ *
  * No portion of this work may be used by any commercial entity, or for any
  * commercial purpose, without the prior, written permission of SimpleScalar,
  * LLC (info@simplescalar.com). Nonprofit and noncommercial use is permitted
  * as described below.
- * 
+ *
  * 1. SimpleScalar is provided AS IS, with no warranty of any kind, express
  * or implied. The user of the program accepts full responsibility for the
  * application of the program and the use of any results.
- * 
+ *
  * 2. Nonprofit and noncommercial use is encouraged. SimpleScalar may be
  * downloaded, compiled, executed, copied, and modified solely for nonprofit,
  * educational, noncommercial research, and noncommercial scholarship
@@ -24,13 +24,13 @@
  * solely for nonprofit, educational, noncommercial research, and
  * noncommercial scholarship purposes provided that this notice in its
  * entirety accompanies all copies.
- * 
+ *
  * 3. ALL COMMERCIAL USE, AND ALL USE BY FOR PROFIT ENTITIES, IS EXPRESSLY
  * PROHIBITED WITHOUT A LICENSE FROM SIMPLESCALAR, LLC (info@simplescalar.com).
- * 
+ *
  * 4. No nonprofit user may place any restrictions on the use of this software,
  * including as modified by the user, by any other authorized user.
- * 
+ *
  * 5. Noncommercial and nonprofit users may distribute copies of SimpleScalar
  * in compiled or executable form as set forth in Section 2, provided that
  * either: (A) it is accompanied by the corresponding machine-readable source
@@ -40,11 +40,11 @@
  * must permit verbatim duplication by anyone, or (C) it is distributed by
  * someone who received only the executable form, and is accompanied by a
  * copy of the written offer of source code.
- * 
+ *
  * 6. SimpleScalar was developed by Todd M. Austin, Ph.D. The tool suite is
  * currently maintained by SimpleScalar LLC (info@simplescalar.com). US Mail:
  * 2395 Timbercrest Court, Ann Arbor, MI 48105.
- * 
+ *
  * Copyright (C) 1994-2003 by Todd M. Austin, Ph.D. and SimpleScalar, LLC.
  */
 
@@ -270,7 +270,8 @@ cache_create(char *name,		/* name of the cache */
 					   md_addr_t baddr, int bsize,
 					   struct cache_blk_t *blk,
 					   tick_t now),
-	     unsigned int hit_latency)	/* latency in cycles for a hit */
+	     unsigned int hit_latency,	/* latency in cycles for a hit */
+	     int isL2) /*FP-BC add L2 identifier to cache creation */
 {
   struct cache_t *cp;
   struct cache_blk_t *blk;
@@ -290,47 +291,46 @@ cache_create(char *name,		/* name of the cache */
     fatal("user data size (in bytes) `%d' must be a positive value", usize);
   if (assoc <= 0)
     fatal("cache associativity `%d' must be non-zero and positive", assoc);
-  if ((assoc & (assoc-1)) != 0)
-    fatal("cache associativity `%d' must be a power of two", assoc);
+  if ((assoc & (assoc-1)) != 0 || (isL2 && assoc < 2)) /*FC-BC Add check for L2 caches to make sure
+                                                            they aren't direct mapped*/
+    fatal("cache associativity `%d' must be a power of two greater than 1", assoc);
   if (!blk_access_fn)
     fatal("must specify miss/replacement functions");
 
+  if(isL2){
+    nsets *= 2;
+  }
+
   /* allocate the cache structure */
+  /*FP-BC space must be allocated for the structure itself, as well as the space for the main cache data
+        and the shared data pool*/
   cp = (struct cache_t *)
     calloc(1, sizeof(struct cache_t) + (nsets-1)*sizeof(struct cache_set_t));
+
   if (!cp)
     fatal("out of virtual memory");
 
   /* initialize user parameters */
   cp->name = mystrdup(name);
-  cp->nsets = nsets;
+  cp->nsets = nsets; /*FP-BC number of sets in new cache
+                            structure is double the input*/
   cp->bsize = bsize;
   cp->balloc = balloc;
   cp->usize = usize;
-  cp->assoc = assoc;
+
+  if(isL2){
+    cp->assoc = assoc / 2; /*FP-BC associativity in new cache
+                            structure is half the input*/
+  }
+  else
+   cp->assoc = assoc;
+
   cp->policy = policy;
   cp->hit_latency = hit_latency;
+  cp->isL2 = isL2;
 
   /* miss/replacement functions */
   cp->blk_access_fn = blk_access_fn;
-
-  /* compute derived parameters */
-  cp->hsize = CACHE_HIGHLY_ASSOC(cp) ? (assoc >> 2) : 0;
-  cp->blk_mask = bsize-1;
-  cp->set_shift = log_base2(bsize);
-  cp->set_mask = nsets-1;
-  cp->tag_shift = cp->set_shift + log_base2(nsets);
-  cp->tag_mask = (1 << (32 - cp->tag_shift))-1;
-  cp->tagset_mask = ~cp->blk_mask;
-  cp->bus_free = 0;
-
-  /* print derived parameters during debug */
-  debug("%s: cp->hsize     = %d", cp->name, cp->hsize);
-  debug("%s: cp->blk_mask  = 0x%08x", cp->name, cp->blk_mask);
-  debug("%s: cp->set_shift = %d", cp->name, cp->set_shift);
-  debug("%s: cp->set_mask  = 0x%08x", cp->name, cp->set_mask);
-  debug("%s: cp->tag_shift = %d", cp->name, cp->tag_shift);
-  debug("%s: cp->tag_mask  = 0x%08x", cp->name, cp->tag_mask);
 
   /* initialize cache stats */
   cp->hits = 0;
@@ -344,17 +344,33 @@ cache_create(char *name,		/* name of the cache */
   cp->last_blk = NULL;
 
   /* allocate data blocks */
-  cp->data = (byte_t *)calloc(nsets * assoc,
+  cp->data = (byte_t *)calloc(nsets * assoc, //maybe needs 2x?
 			      sizeof(struct cache_blk_t) +
 			      (cp->balloc ? (bsize*sizeof(byte_t)) : 0));
+
   if (!cp->data)
     fatal("out of virtual memory");
 
+  /*FP-BC configure full flag and FSR to initial values */
+  if(isL2)
+  {
+      //Set FSR and full flag to initial values
+      cp->FSR = (nsets/2) + 1;
+
+      cp->fullFlag = FALSE;
+  }
+
+
   /* slice up the data blocks */
-  for (bindex=0,i=0; i<nsets; i++)
+  for (bindex=0,i=0; i<nsets; i++) //maybe needs 2x?
     {
+      //fprintf(stderr, "here\n" );
       cp->sets[i].way_head = NULL;
+      //fprintf(stderr, "and here\n" );
       cp->sets[i].way_tail = NULL;
+      cp->sets[i].fullBit = 0;
+      cp->sets[i].usageCtr = 0;
+      cp->sets[i].fwdPtr  = 0;
       /* get a hash table, if needed */
       if (cp->hsize)
 	{
@@ -368,7 +384,7 @@ cache_create(char *name,		/* name of the cache */
 	 otherwise, block accesses through SET->BLKS will fail (used
 	 during random replacement selection) */
       cp->sets[i].blks = CACHE_BINDEX(cp, cp->data, bindex);
-      
+
       /* link the data blocks into ordered way chain and hash table bucket
          chains, if hash table exists */
       for (j=0; j<assoc; j++)
@@ -398,6 +414,32 @@ cache_create(char *name,		/* name of the cache */
 	    cp->sets[i].way_tail = blk;
 	}
     }
+
+  /*FP-BC number of sets in new cache structure must be
+    stored as if the cache pool doesn't exist*/
+  if(isL2){  
+    cp->nsets = nsets/2;
+    nsets = nsets/2;
+  } 
+  else cp->nsets = nsets;
+  /* compute derived parameters */
+  cp->hsize = CACHE_HIGHLY_ASSOC(cp) ? (assoc >> 2) : 0;
+  cp->blk_mask = bsize-1;
+  cp->set_shift = log_base2(bsize);
+  cp->set_mask = nsets-1;
+  cp->tag_shift = cp->set_shift + log_base2(nsets);
+  cp->tag_mask = (1 << (32 - cp->tag_shift))-1;
+  cp->tagset_mask = ~cp->blk_mask;
+  cp->bus_free = 0;
+
+  /* print derived parameters during debug */
+  debug("%s: cp->hsize     = %d", cp->name, cp->hsize);
+  debug("%s: cp->blk_mask  = 0x%08x", cp->name, cp->blk_mask);
+  debug("%s: cp->set_shift = %d", cp->name, cp->set_shift);
+  debug("%s: cp->set_mask  = 0x%08x", cp->name, cp->set_mask);
+  debug("%s: cp->tag_shift = %d", cp->name, cp->tag_shift);
+  debug("%s: cp->tag_mask  = 0x%08x", cp->name, cp->tag_mask);
+
   return cp;
 }
 
@@ -513,6 +555,15 @@ cache_access(struct cache_t *cp,	/* cache to access */
   struct cache_blk_t *blk, *repl;
   int lat = 0;
 
+  if(cp->isL2){
+    if(set > 512){
+      fprintf(stderr, "Houston we have a problem, set = %d\n", set);
+      scanf("%d", &lat);
+    }
+  }
+
+  int pointerLat = 0;
+
   /* default replacement address */
   if (repl_addr)
     *repl_addr = 0;
@@ -536,40 +587,153 @@ cache_access(struct cache_t *cp,	/* cache to access */
       blk = cp->last_blk;
       goto cache_fast_hit;
     }
-    
-  if (cp->hsize)
-    {
-      /* higly-associativity cache, access through the per-set hash tables */
-      int hindex = CACHE_HASH(cp, tag);
 
-      for (blk=cp->sets[set].hash[hindex];
-	   blk;
-	   blk=blk->hash_next)
-	{
-	  if (blk->tag == tag && (blk->status & CACHE_BLK_VALID))
-	    goto cache_hit;
-	}
-    }
+
+
+  /*FP-JS Loc will store the last line traversed through the list
+  I want to keep set so I know where the head of the list is for replacement
+  */
+  unsigned int loc = set; 
+  /*FP-BC Modified cache hit checker for new cache structure*/
+  if(cp->isL2)
+  {
+       /*FP-BC continue through each linked set with data*/
+       while(cp->sets[loc].usageCtr)
+       {
+
+      //if(cp->isL2)
+      //fprintf(stderr, "ptr = %d, loc = %d", cp->sets[loc].fwdPtr, loc);
+          if (cp->hsize)
+          {
+              /* higly-associativity cache, access through the per-set hash tables */
+              int hindex = CACHE_HASH(cp, tag);
+
+              for (blk=cp->sets[loc].hash[hindex]; blk; blk=blk->hash_next)
+              {
+                  if (blk->tag == tag && (blk->status & CACHE_BLK_VALID)){
+                    //fprintf(stderr, "Hit!");
+                    goto cache_hit;
+                  }
+              }
+          }
+
+          else
+          {
+              /* low-associativity cache, linear search the way list */
+              for (blk=cp->sets[loc].way_head; blk; blk=blk->way_next)
+              {
+                  if (blk->tag == tag && (blk->status & CACHE_BLK_VALID)){
+                       //                 fprintf(stderr, "Hit!");
+                    goto cache_hit;
+                  }
+              }
+          }
+
+          /*FP-BC If the current set has a pointer to another set,
+            follow it and check again for a hit*/
+          if(cp->sets[loc].fwdPtr){
+            loc = cp->sets[loc].fwdPtr;
+            pointerLat+=1;
+          }
+          else
+            break;
+       }
+  }
+
+  /*FP-BC Original cache hit checker*/
   else
-    {
-      /* low-associativity cache, linear search the way list */
-      for (blk=cp->sets[set].way_head;
-	   blk;
-	   blk=blk->way_next)
-	{
-	  if (blk->tag == tag && (blk->status & CACHE_BLK_VALID))
-	    goto cache_hit;
-	}
-    }
+  {
+      if (cp->hsize)
+      {
+          /* higly-associativity cache, access through the per-set hash tables */
+          int hindex = CACHE_HASH(cp, tag);
+
+          for (blk=cp->sets[set].hash[hindex]; blk; blk=blk->hash_next)
+          {
+              if (blk->tag == tag && (blk->status & CACHE_BLK_VALID))
+                goto cache_hit;
+          }
+      }
+      else
+      {
+          /* low-associativity cache, linear search the way list */
+          for (blk=cp->sets[set].way_head; blk; blk=blk->way_next)
+          {
+              if (blk->tag == tag && (blk->status & CACHE_BLK_VALID))
+                goto cache_hit;
+          }
+      }
+  }
 
   /* cache block not found */
 
   /* **MISS** */
   cp->misses++;
 
+    enum cache_policy policy = cp->policy;
+
   /* select the appropriate block to replace, and re-link this entry to
      the appropriate place in the way list */
-  switch (cp->policy) {
+  if(cp->isL2){
+    if(cp->sets[loc].fullBit == 0){
+      //fprintf(stderr, "FIFO\n" );
+      policy = FIFO; //use FIFO to fill the set
+      cp->sets[loc].usageCtr++;
+      if(loc != set)
+        cp->sets[set].usageCtr++;
+      if(cp->sets[loc].usageCtr == cp->assoc){
+        cp->sets[loc].fullBit = 1; // set full if adding to the set reached its assoc
+      }
+      set = loc;
+    }
+    else if(cp->fullFlag == 0){
+      int numSets = cp->sets[set].usageCtr/cp->assoc;
+      if(numSets < 5){ //only add a line if the linked list is less than 5 length
+        //fprintf(stderr, "adding a pointer. FSR = %d, loc = %d\n", cp->FSR, cp->nsets, numSets, loc);
+        policy = FIFO;
+        cp->sets[loc].usageCtr++;
+        if(loc != set)
+          cp->sets[set].usageCtr++;
+        cp->sets[loc].fwdPtr = cp->FSR;
+        if(loc == cp->FSR){
+          fprintf(stderr, "FSR = %d loc = %d\n", cp->FSR,  loc);
+         // scanf("%s", &loc);
+        }
+        set = cp->FSR;
+        cp->FSR = 1 + (cp->FSR);
+        if(cp->FSR >= cp->nsets*2){
+          cp->fullFlag = 1;
+        }
+      }
+      else {
+        //fprintf(stderr, "more than 5 pointers\n");
+        int times = rand() % numSets;
+        int i = 0;
+        for(i = 0; i < times; i++){
+          if(cp->sets[set].fwdPtr != 0){
+            set = cp->sets[set].fwdPtr;
+                        pointerLat+=1;
+          }
+        }
+      }
+    }
+    else{ //else everything is full so randomly select a set
+      //fprintf(stderr, "evicting a set\n");
+      int numSets = cp->sets[set].usageCtr/cp->assoc;
+      //fprintf(stderr, "numSets is %d\n", numSets);
+      int times = myrand();
+      times = times % numSets;
+      //fprintf(stderr, "times is %d\n", times);
+      int i = 0;
+      for(i = 0; i < times; i++){
+        if(cp->sets[set].fwdPtr != 0){
+          set = cp->sets[set].fwdPtr;
+                      pointerLat+=1;
+        }
+      }
+    }
+  }
+  switch (policy) {
   case LRU:
   case FIFO:
     repl = cp->sets[set].way_tail;
@@ -577,8 +741,11 @@ cache_access(struct cache_t *cp,	/* cache to access */
     break;
   case Random:
     {
-      int bindex = myrand() & (cp->assoc - 1);
+      //fprintf(stderr, "here\n" );
+      int bindex = myrand();
+      bindex = bindex & (cp->assoc - 1);
       repl = CACHE_BINDEX(cp, cp->sets[set].blks, bindex);
+      //fprintf(stderr, "exiting\n" );
     }
     break;
   default:
@@ -600,13 +767,13 @@ cache_access(struct cache_t *cp,	/* cache to access */
 
       if (repl_addr)
 	*repl_addr = CACHE_MK_BADDR(cp, repl->tag, set);
- 
+
       /* don't replace the block until outstanding misses are satisfied */
       lat += BOUND_POS(repl->ready - now);
- 
+
       /* stall until the bus to next level of memory is available */
       lat += BOUND_POS(cp->bus_free - (now + lat));
- 
+
       /* track bus resource usage */
       cp->bus_free = MAX(cp->bus_free, (now + lat)) + 1;
 
@@ -634,6 +801,8 @@ cache_access(struct cache_t *cp,	/* cache to access */
       CACHE_BCOPY(cmd, repl, bofs, p, nbytes);
     }
 
+
+
   /* update dirty status */
   if (cmd == Write)
     repl->status |= CACHE_BLK_DIRTY;
@@ -650,11 +819,11 @@ cache_access(struct cache_t *cp,	/* cache to access */
     link_htab_ent(cp, &cp->sets[set], repl);
 
   /* return latency of the operation */
-  return lat;
+  return lat+pointerLat;
 
 
  cache_hit: /* slow hit handler */
-  
+
   /* **HIT** */
   cp->hits++;
 
@@ -682,14 +851,15 @@ cache_access(struct cache_t *cp,	/* cache to access */
   cp->last_blk = blk;
 
   /* get user block data, if requested and it exists */
-  if (udata)
+  if (udata){
     *udata = blk->user_data;
+    
+  }
 
   /* return first cycle data is available to access */
-  return (int) MAX(cp->hit_latency, (blk->ready - now));
+  return (int) MAX(cp->hit_latency+pointerLat, pointerLat+(blk->ready - now));
 
  cache_fast_hit: /* fast hit handler */
-  
   /* **FAST HIT** */
   cp->hits++;
 
@@ -716,7 +886,7 @@ cache_access(struct cache_t *cp,	/* cache to access */
   cp->last_blk = blk;
 
   /* return first cycle data is available to access */
-  return (int) MAX(cp->hit_latency, (blk->ready - now));
+  return (int) MAX(pointerLat+cp->hit_latency, pointerLat+(blk->ready - now));
 }
 
 /* return non-zero if block containing address ADDR is contained in cache
@@ -736,11 +906,11 @@ cache_probe(struct cache_t *cp,		/* cache instance to probe */
   {
     /* higly-associativity cache, access through the per-set hash tables */
     int hindex = CACHE_HASH(cp, tag);
-    
+
     for (blk=cp->sets[set].hash[hindex];
 	 blk;
 	 blk=blk->hash_next)
-    {	
+    {
       if (blk->tag == tag && (blk->status & CACHE_BLK_VALID))
 	  return TRUE;
     }
@@ -756,7 +926,7 @@ cache_probe(struct cache_t *cp,		/* cache instance to probe */
 	  return TRUE;
     }
   }
-  
+
   /* cache block not found */
   return FALSE;
 }
@@ -768,6 +938,8 @@ cache_flush(struct cache_t *cp,		/* cache instance to flush */
 {
   int i, lat = cp->hit_latency; /* min latency to probe cache */
   struct cache_blk_t *blk;
+
+    fprintf( stderr, "cache flush\n" );
 
   /* blow away the last block to hit */
   cp->last_tagset = 0;
@@ -806,6 +978,7 @@ cache_flush_addr(struct cache_t *cp,	/* cache instance to flush */
 		 md_addr_t addr,	/* address of block to flush */
 		 tick_t now)		/* time of cache flush */
 {
+  fprintf( stderr, "flush address\n" );
   md_addr_t tag = CACHE_TAG(cp, addr);
   md_addr_t set = CACHE_SET(cp, addr);
   struct cache_blk_t *blk;
